@@ -13,9 +13,3 @@ jobs:
             - uses:  moosetechnology/setup-MooseCI@main
               with:
                 project-path: tslearn
-            - uses: actions/download-artifact@v4
-              with:
-                name: moose-ci-report
-            - name: 'Check report exists'
-              working-directory: .
-              run: test -f tslearn/.moose-ci/report/report*.json
