@@ -1,0 +1,15 @@
+name: 'Moose CI'
+on: [push, pull_request]
+
+jobs:
+    test:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            actions: write
+            pull-requests: write
+        steps:
+            - uses: actions/checkout@v4
+            - uses:  moosetechnology/setup-MooseCI@main
+              with:
+                project-path: tslearn
