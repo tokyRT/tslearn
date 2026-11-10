@@ -1,0 +1,33 @@
+MooseCIConfig {
+	#projectLanguage : #python,
+	#metrics : [
+		#files,
+		#loc,
+		#classes
+	],
+	#rules : [
+		#long_file : {
+			#loc : 1000
+		},
+		#no_docstring,
+		#too_many_parameters : {
+			#parameters : 10
+		},
+		#large_class : {
+			#attributes : 15,
+			#methods : 20
+		},
+		#local_var_naming,
+		#unused_local_variable,
+		#unused_parameter,
+		#unused_private_method,
+		#shadowed_attribute,
+		#function_naming
+	],
+	#outputFormats : [
+		#json, #html
+	],
+	#outputPath : '.moose-ci/report',
+	#visualizations : [ ],
+	#isRemote : false
+}
