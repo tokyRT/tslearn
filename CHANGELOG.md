@@ -9,13 +9,67 @@ and this project adheres to
 Changelogs for this project are recorded in this file since v0.2.0.
 
 
-## [Towards v0.10.0]
+## [Towards v0.11.0]
+
+### Fixed
+
+* Inertia of `TimeSeriesKMeans` now properly reflects the final centroid updates ([#832](https://github.com/tslearn-team/tslearn/issues/832))
+* `VARIMA` and `AutoVARIMA` now preserve the residual history of shorter series
+  when forecasting a batch of unequal-length time series.
+* Preserve autograd for custom distances in `SoftDTWLossPyTorch` by avoiding
+  in-place edits of their pairwise distance matrices.
+* `NonMyopicEarlyClassifier.get_cluster_probas` now returns uniform cluster probabilities, instead of `NaN`,
+  when the incoming time series is at distance 0 from every cluster center
+  (for instance when all training series start with the same values). 
+  The `NaN` expected costs previously made `predict`, `predict_proba` and `early_predict` decide
+  at the earliest possible time. ([#781](https://github.com/tslearn-team/tslearn/issues/781))
+* `dtw_barycenter_averaging_subgradient` now returns the best (lowest-cost) barycenter found
+  across iterations instead of the one from the last iteration. The best barycenter was kept by
+  reference and overwritten by later in-place updates, so a non-monotonic run (e.g. with a large
+  step size) could return a much worse result.
+* Preserve float64 precision of costs and gradients in `SoftDTWLossPyTorch`.
+* BDA computation methods now take into account explicit global constraint during centroid updates ([#803](https://github.com/tslearn-team/tslearn/issues/803))
+* `MatrixProfile` with the default `implementation="numpy"` no longer returns an all-`NaN` profile
+  for a time series that contains `NaN` values, such as the padding of a shorter series in a variable
+  length dataset. Subsequences containing `NaN` are now treated as infinitely far away, as with
+  `implementation="stump"`, so the rest of the profile matches the one of the unpadded series.
+  ([#753](https://github.com/tslearn-team/tslearn/issues/753))
+* `KShape` and `TimeSeriesKMeans` no longer keep the `labels_` and `cluster_centers_` of a failed attempt when every initialization leads to an empty cluster. The model is now left unfitted (these attributes are `None`, `predict` and `transform` raise `NotFittedError`) and a `ConvergenceWarning` is emitted. ([#740](https://github.com/tslearn-team/tslearn/issues/740))
+* `KernelKMeans` no longer keeps the `labels_` of a failed attempt when every initialization leads to an empty cluster. The model is now left unfitted (`labels_` is `None` and `predict` raises `NotFittedError`) and a `ConvergenceWarning` is emitted. ([#788](https://github.com/tslearn-team/tslearn/issues/788))
+
+### Deprecated
+
+* The `NonInvasiveFatalECGThorax1` and `NonInvasiveFatalECGThorax2` dataset names of
+  `UCR_UEA_datasets` are deprecated in favor of `NonInvasiveFetalECGThorax1` and
+  `NonInvasiveFetalECGThorax2`, the names used by the archive. `list_univariate_datasets`
+  now lists the latter.
+
+### Removed
+
+* Support for sklearn version 1.5 is dropped
+* Support for Python versions 3.10 is dropped
+
+## [v0.10.0]
 
 ### Added
 
+* New `tslearn.foundation` module to re-use pre-trained time series models, such as
+  the ones published on the Hugging Face Hub, behind the usual tslearn API. It provides
+  `ZeroShotForecaster`, `LinearProbeForecaster` and the underlying
+  `TimeSeriesFoundationEmbedder` feature extractor, which allows one to choose
+  the probed layer, the tokens taken into account and the pooling applied to their
+  representations. With `pooling=None`, the latter acts as a time series to time series
+  transform, returning one representation per token, and being a regular scikit-learn
+  transformer, it composes with a `sklearn.pipeline.Pipeline` for tasks such as linear
+  probing for classification. Requires PyTorch.
 * soft-dtw related tools now support Itakura and Sakoe-Chiba global constraints. ([#189](https://github.com/tslearn-team/tslearn/issues/189))
 * Multithreading support added to `cdist_soft_dtw` and `softdtw_barycenter`. ([#310](https://github.com/tslearn-team/tslearn/issues/310)) 
+* `TimeSeriesScalerMinMax` and `TimeSeriesScalerMeanVariance` now offer an inverse_transform method 
+to reverse the normalization. ([#697](https://github.com/tslearn-team/tslearn/issues/697))
+* `tslearn.forecasting.ScaledForecastingPipeline` wraps a forecaster so that it is fitted on scaled data and 
+its predictions are un-scaled back, using any `tslearn.preprocessing` scaler. ([#708](https://github.com/tslearn-team/tslearn/issues/708))
 * Added `tslearn.clustering.silhouette_samples` to compute per-sample silhouette coefficients with time-series metrics. ([#451](https://github.com/tslearn-team/tslearn/issues/451))
+* `SymbolicAggregateApproximation` and `OneD_SymbolicAggregateApproximation` can now handle variable lengths
 
 ### Removed
 
@@ -24,14 +78,25 @@ Changelogs for this project are recorded in this file since v0.2.0.
 ### Changed
 
 * soft-dtw API is now consistent with other metrics regarding parameters names and backend management.
+* `tslearn` classes and functions can be used with top level import.  
 
 ### Fixed
 
+* Correct the discrete segment center in 1d-SAX distances, preserving the
+  representative average when the slope is nonzero.
+* `mase` now scales each feature by its own in-sample naive forecast error, so that `multioutput="uniform_average"` and array-like `multioutput` aggregate the per-feature values returned with `multioutput="raw_values"` (a NumPy array `multioutput` previously raised `ValueError`). The NaN padding of variable length `train_data` is now ignored instead of making the result `NaN`.
 * `lcss` and `lcss_path_from_metric` now respect the `global_constraint` / Sakoe-Chiba / Itakura band, which was previously ignored. ([#526](https://github.com/tslearn-team/tslearn/issues/526))
 * `gak` and `cdist_gak` no longer return `NaN` for time series longer than about 405 samples. They are now normalized in log space, and the Global Alignment Kernel recursion falls back to a log-space accumulation when its value leaves the range of a 64-bit float. This also fixes `TimeSeriesSVC` / `TimeSeriesSVR` and `KernelKMeans` with `kernel="gak"` on long time series. ([#450](https://github.com/tslearn-team/tslearn/issues/450))
 * Fixed double scaling in `OneD_SymbolicAggregateApproximation`. ([#722](https://github.com/tslearn-team/tslearn/issues/722))
 * `cdist_frechet` now respects `global_constraint`, which was previously ignored. ([#726](https://github.com/tslearn-team/tslearn/issues/726))
 * `TimeSeriesSVR` now passes `epsilon` on to the underlying `sklearn.svm.SVR`, which was previously ignored so the epsilon-tube width was always the sklearn default. ([#727](https://github.com/tslearn-team/tslearn/issues/727))
+* `TimeSeriesImputer(method="linear")` no longer raises `ValueError` when a feature of a time series has no observed value. Such features are now left unchanged, as for the other imputation methods.
+* `PiecewiseAggregateApproximation.distance`, `SymbolicAggregateApproximation.distance` and `OneD_SymbolicAggregateApproximation.distance` now accept two time series of different lengths, instead of failing on the ragged input. ([#738](https://github.com/tslearn-team/tslearn/issues/738))
+* `VARIMA` and `AutoVARIMA` forecasts with a differencing order `d` of 2 or more are now integrated back correctly. They were previously integrated as if `d` were 1.
+* `dtw_barycenter_averaging_subgradient` now takes `weights` into account (they cancelled out in each update step), no longer returns NaN when a weight is 0, and stops based on the weighted cost over the whole epoch. ([#764](https://github.com/tslearn-team/tslearn/issues/764))
+* Performance metrics now check inputs shape consistency ([#771](https://github.com/tslearn-team/tslearn/issues/771))
+* `VARIMA` and `AutoVARIMA` forecasts are now correct for multivariate series, which previously applied the transpose of the fitted autoregressive matrices. `ma_coeffs_[k]` is now the lag `k + 1` term, in the same order as `ar_coeffs_`. ([#762](https://github.com/tslearn-team/tslearn/issues/762))
+* `NonMyopicEarlyClassifier` now normalizes the confusion matrices stored in `pyhatyck_` over the predicted classes, so that they hold the documented probabilities of predicting `y_hat` given the true class `y` and the cluster. They were previously normalized over the true classes, which gave wrong expected misclassification costs and therefore wrong prediction times. ([#778](https://github.com/tslearn-team/tslearn/issues/778))
 
 ## [v0.9.0]
 

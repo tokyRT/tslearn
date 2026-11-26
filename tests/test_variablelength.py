@@ -3,7 +3,12 @@ from numpy.testing import assert_allclose, assert_array_less
 from sklearn.model_selection import cross_val_score, KFold
 
 from tslearn.clustering import KernelKMeans, TimeSeriesKMeans
-from tslearn.neighbors import KNeighborsTimeSeriesClassifier
+from tslearn.neighbors import KNeighborsTimeSeries, KNeighborsTimeSeriesClassifier
+from tslearn.piecewise import (
+    PiecewiseAggregateApproximation,
+    SymbolicAggregateApproximation,
+    OneD_SymbolicAggregateApproximation
+)
 from tslearn.preprocessing import (
     TimeSeriesImputer,
     TimeSeriesResampler,
@@ -17,6 +22,19 @@ __author__ = 'Romain Tavenard romain.tavenard[at]univ-rennes2.fr'
 
 
 def test_variable_length_knn():
+    X_train = to_time_series_dataset([[1, 2, 3, 4],
+                                      [3, 3, 2, 0, 1],
+                                      [1, 2, 2, 4, 5, 6]])
+    X_query = to_time_series_dataset([[1, 2, 3],
+                                      [0, 1, 2, 3, 4]])
+    model = KNeighborsTimeSeries(n_neighbors=1, metric="dtw").fit(X_train)
+    dist, ind = model.kneighbors(X_query)
+    np.testing.assert_allclose(dist, np.array([[1.], [1.]]))
+    np.testing.assert_equal(ind, np.array([[0], [0]]))
+    assert len(model.radius_neighbors(X_query, radius=3.0)[1]) == 2
+
+
+def test_variable_length_knn_clf():
     X = to_time_series_dataset([[1, 2, 3, 4],
                                 [1, 2, 3],
                                 [9, 8, 7, 6, 5, 2],
@@ -74,6 +92,40 @@ def test_variable_length_clustering():
 
     clf = TimeSeriesKMeans(n_clusters=2, metric="softdtw", random_state=rng)
     clf.fit(X)
+
+
+def test_variable_length_piecewise():
+    X = to_time_series_dataset([[-1, 0, 1, 2],
+                                [3, 2, 1, 0, -1, -2],
+                                [3, 2, 1, 0, -1],
+                                [0, 1, -1, 0, 1, 0]])
+    est = PiecewiseAggregateApproximation(n_segments=2)
+    assert_allclose(est.fit_transform(X),
+                    to_time_series_dataset([
+                        [-0.5, 1.5],
+                        [2, -1],
+                        [2.5, 0.5],
+                        [0, 1/3],
+                    ]))
+
+    est = SymbolicAggregateApproximation(n_segments=2, alphabet_size_avg=3)
+    assert_allclose(est.fit_transform(X),
+                    to_time_series_dataset([
+                        [0, 2],
+                        [2, 0],
+                        [2, 2],
+                        [1, 1],
+                    ]))
+
+    est = OneD_SymbolicAggregateApproximation(n_segments=2, alphabet_size_avg=3, alphabet_size_slope=3)
+    assert_allclose(est.fit_transform(X),
+                    to_time_series_dataset([
+                        [[0, 2], [2, 2]],
+                        [[2, 0], [0, 0]],
+                        [[2, 0], [2, 0]],
+                        [[1, 0], [1, 1]]
+                    ]))
+
 
 def test_variable_cross_val():
     # TODO: here we just check that they can accept variable-length TS, not

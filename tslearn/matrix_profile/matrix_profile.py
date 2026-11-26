@@ -1,6 +1,8 @@
 import numpy as np
 from numpy.lib.stride_tricks import as_strided
+
 from scipy.spatial.distance import pdist, squareform
+
 from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.utils.validation import check_is_fitted
 
@@ -126,10 +128,6 @@ class MatrixProfile(TimeSeriesMixin,
         self.scale = scale
         self.implementation = implementation
 
-    def _is_fitted(self):
-        check_is_fitted(self, '_X_fit_dims')
-        return True
-
     def _fit(self, X, y=None):
         self._X_fit_dims = X.shape
         self.n_features_in_ = X.shape[-1]
@@ -151,6 +149,17 @@ class MatrixProfile(TimeSeriesMixin,
         X = check_array(X, allow_nd=True, force_all_finite=False)
         X = check_dims(X)
         return self._fit(X)
+
+    def _get_model_params(self):
+        params = super()._get_model_params()
+        params.update({"_X_fit_dims": np.array(self._X_fit_dims)})
+        return params
+
+    @staticmethod
+    def _organize_model(cls, model):
+        inst = super()._organize_model(cls, model)
+        inst._X_fit_dims = tuple(inst._X_fit_dims)
+        return inst
 
     def _transform(self, X, y=None):
         n_ts, sz, d = X.shape
@@ -197,7 +206,7 @@ class MatrixProfile(TimeSeriesMixin,
                             band_width, dtype=bool) &
                         ~np.tri(n_segments, n_segments,
                                 -(band_width + 1), dtype=bool))
-                dists[band] = np.inf
+                dists[band | np.isnan(dists)] = np.inf
                 X_transformed[i_ts] = dists.min(axis=1, keepdims=True)
 
         else:
@@ -223,10 +232,10 @@ class MatrixProfile(TimeSeriesMixin,
         Returns
         -------
         numpy.ndarray of shape (n_ts, output_size, 1)
-            Matrix-Profile-Transformed dataset. `ouput_size` is equal to
+            Matrix-Profile-Transformed dataset. `output_size` is equal to
             `sz - subsequence_length + 1`
         """
-        self._is_fitted()
+        check_is_fitted(self)
         X = check_array(X, allow_nd=True, force_all_finite=False)
         X = check_dims(X, X_fit_dims=self._X_fit_dims,
                        check_n_features_only=True)
@@ -250,11 +259,6 @@ class MatrixProfile(TimeSeriesMixin,
         X = check_array(X, allow_nd=True, force_all_finite=False)
         X = check_dims(X)
         return self._fit(X)._transform(X)
-
-    def _more_tags(self):
-        tags = super()._more_tags()
-        tags.update({'allow_nan': True, 'allow_variable_length': True})
-        return tags
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()

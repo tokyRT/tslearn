@@ -12,8 +12,7 @@ from sklearn.utils.validation import check_is_fitted
 from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import kpss
 
-from tslearn.bases import TimeSeriesMixin, BaseModelPackage
-from tslearn.bases.bases import ALLOW_VARIABLE_LENGTH
+from tslearn.bases import TimeSeriesMixin
 from tslearn.utils import check_array, to_time_series_dataset, check_dims
 from tslearn.utils.utils import _ts_size
 
@@ -101,14 +100,14 @@ def _varma_next(X, residuals, ar_coeffs, ma_coeffs, intercept):
         ar_forecast += np.dot(X[:, n_samples - k - 1], ar_coeffs[k])
     ma_forecast = np.zeros((n_ts, n_features_in))
     for k in range(ma_coeffs.shape[0]):
-        ma_forecast += np.dot(residuals[:, k], ma_coeffs[k])
+        ma_forecast += np.dot(residuals[:, -k - 1], ma_coeffs[k])
 
     intercept = np.zeros(n_features_in) if intercept.shape[0] == 0 else intercept
 
     return ar_forecast + ma_forecast + np.expand_dims(intercept, axis=0)
 
 
-class VARIMA(TimeSeriesMixin, BaseEstimator, BaseModelPackage):
+class VARIMA(TimeSeriesMixin, BaseEstimator):
     """
     Vector AutoRegressive Integrated Moving Average (VARIMA) estimator [1]_.
 
@@ -264,17 +263,12 @@ class VARIMA(TimeSeriesMixin, BaseEstimator, BaseModelPackage):
         return seasonal_differenced_X
 
     def _get_last_timestamps(self, X, ts_sizes):
-        n_ts, sz, n_features_in = X.shape
-        if max(self.p, self.q, self.d, self._seasonal_period):
-            # Move nans of variable length time series up front to properly select last_values
-            for i, ts in enumerate(X):
-                X[i] = np.roll(ts, sz - ts_sizes[i], axis=0)
-            n_timestamp_to_keep = self._seasonal_period + self.d + self.p
-            last_timestamps = X[:, -n_timestamp_to_keep:]
-        else:
-            # No need to keep any
-            last_timestamps = np.empty((n_ts, 0, n_features_in))
-        return last_timestamps
+        n_timestamps = self._seasonal_period + self.d + self.p
+        # Select history from each series without shifting its padding before
+        # the moving-average residuals are computed.
+        offsets = np.arange(-n_timestamps, 0)
+        last_indices = np.asarray(ts_sizes, dtype=np.intp)[:, None] + offsets
+        return X[np.arange(X.shape[0])[:, None], last_indices]
 
     def _default_params(self, X):
         params = np.vstack(
@@ -296,7 +290,7 @@ class VARIMA(TimeSeriesMixin, BaseEstimator, BaseModelPackage):
         ma_start_params = compute_var(self.q, residuals)[1]
 
         return np.concatenate(
-            (constant_params, ar_start_params.T.ravel(), ma_start_params.T.ravel())
+            (constant_params, ar_start_params.ravel(), ma_start_params.ravel())
         )
 
     def _unravel_params(self, params, n_features_in=None):
@@ -339,9 +333,11 @@ class VARIMA(TimeSeriesMixin, BaseEstimator, BaseModelPackage):
         return _loss(X, intercept, ar_coeffs, ma_coeffs)
 
     def _undifference(self, initial_values, prediction):
+        # x_t = (d-th difference of x_t) - sum_{k=1..d} (-1)^k C(d, k) x_{t-k},
+        # where initial_values[:, -d:] holds x_{t-d}, ..., x_{t-1}
         _ = np.array(
             [
-                (-(1 ** (j + 1))) * scipy.special.binom(j + 1, self.d)
+                (-1) ** (self.d - j) * scipy.special.binom(self.d, j)
                 for j in range(self.d)
             ]
         )
@@ -455,15 +451,8 @@ class VARIMA(TimeSeriesMixin, BaseEstimator, BaseModelPackage):
         tags.input_tags.allow_nan = True
         return tags
 
-    def _more_tags(self):  # pragma: no cover
-        tags = super()._more_tags()
-        tags.update(
-            {"requires_y": False, "allow_nan": True, ALLOW_VARIABLE_LENGTH: True}
-        )
-        return tags
 
-
-class AutoVARIMA(TimeSeriesMixin, BaseEstimator, BaseModelPackage):
+class AutoVARIMA(TimeSeriesMixin, BaseEstimator):
     """Automatically selects the best Vector Autoregressive Integrated Moving Average (VARIMA) model
     through Hyndman-Khandakar algorithm [1]_ [2]_.
 
@@ -793,11 +782,4 @@ class AutoVARIMA(TimeSeriesMixin, BaseEstimator, BaseModelPackage):
         tags.target_tags.required = False
         tags.allow_variable_length = True
         tags.input_tags.allow_nan = True
-        return tags
-
-    def _more_tags(self):  # pragma: no cover
-        tags = super()._more_tags()
-        tags.update(
-            {"requires_y": False, "allow_nan": True, ALLOW_VARIABLE_LENGTH: True}
-        )
         return tags

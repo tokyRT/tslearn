@@ -748,12 +748,21 @@ class LearningShapelets(TimeSeriesMixin, ClassifierMixin, TransformerMixin, Base
         self.transformer_model_.compile(loss="mean_squared_error",
                                         optimizer=self.optimizer)
 
-        min_pool_inputs = [self.model_.get_layer("min_pooling_%d" % i).input[0]
+        min_pool_inputs = [self.model_.get_layer("min_pooling_%d" % i).input
                            for i in range(self._n_shapelet_sizes)]
-        pool_layers_locations = [
-            GlobalArgminPooling1D(name="argmin_pooling_%d" % i)(pool_input)
-            for i, pool_input in enumerate(min_pool_inputs)
-        ]
+
+        try:
+            # With Keras 3.16, mask not considered a layer's input
+            pool_layers_locations = [
+                GlobalArgminPooling1D(name="argmin_pooling_%d" % i)(pool_input)
+                for i, pool_input in enumerate(min_pool_inputs)
+            ]
+        except ValueError:
+            # Before Keras 3.16, mask is considered a layer's input, pool_input is a list
+            pool_layers_locations = [
+                GlobalArgminPooling1D(name="argmin_pooling_%d" % i)(pool_input[0])
+                for i, pool_input in enumerate(min_pool_inputs)
+            ]
         if self._n_shapelet_sizes > 1:
             concatenated_locations = concatenate(pool_layers_locations)
         else:
@@ -902,10 +911,6 @@ class LearningShapelets(TimeSeriesMixin, ClassifierMixin, TransformerMixin, Base
         else:
             return self.model_.get_layer(layer_name).set_weights(weights)
 
-    def _is_fitted(self):
-        check_is_fitted(self, 'model_')
-        return True
-
     def _to_dict(self, output=None, hyper_parameters_only=False):
         result = super()._to_dict(output, hyper_parameters_only)
 
@@ -987,11 +992,6 @@ class LearningShapelets(TimeSeriesMixin, ClassifierMixin, TransformerMixin, Base
         """LearningShapelet is not HDF5 serializable"""
         check_is_fitted(self, 'model_')
         raise NotImplementedError("LearningShapelet is not HDF5 serializable")
-
-    def _more_tags(self):
-        tags = super()._more_tags()
-        tags.update({'allow_nan': True, 'allow_variable_length': True})
-        return tags
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()

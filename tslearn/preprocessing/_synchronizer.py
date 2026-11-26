@@ -3,8 +3,7 @@ import numpy as np
 from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.utils.validation import check_is_fitted
 
-from tslearn.bases import TimeSeriesMixin
-from tslearn.bases.bases import ALLOW_VARIABLE_LENGTH
+from tslearn.bases import TimeSeriesMixin, BaseModelPackage
 from tslearn.utils import check_variable_length_input, check_dims
 from tslearn.utils.utils import _ts_size
 
@@ -12,7 +11,8 @@ from tslearn.utils.utils import _ts_size
 class TimeSeriesFeatureSynchronizer(
     TimeSeriesMixin,
     TransformerMixin,
-    BaseEstimator
+    BaseEstimator,
+    BaseModelPackage
 ):
     """
     Feature synchronizer for time series.
@@ -71,8 +71,7 @@ class TimeSeriesFeatureSynchronizer(
         self
         """
         X_ = check_variable_length_input(X)
-        self._X_fit_dims = X_.shape
-        self.n_features_in_ = self._X_fit_dims[-1]
+        self.n_features_in_ = X_.shape[-1]
         return self
 
     def transform(self, X, y=None, timestamps=None):
@@ -98,12 +97,12 @@ class TimeSeriesFeatureSynchronizer(
         numpy.ndarray
             Time series dataset synchronized feature wise.
         """
-        check_is_fitted(self, '_X_fit_dims')
+        check_is_fitted(self)
 
         X_ = check_variable_length_input(X)
         X_ = check_dims(
             X_,
-            X_fit_dims=self._X_fit_dims,
+            X_fit_dims=(0, 0, self.n_features_in_),
             extend=False,
             check_n_features_only=True
         )
@@ -165,11 +164,6 @@ class TimeSeriesFeatureSynchronizer(
             Time series dataset synchronized feature wise.
         """
         return self.fit(X, y).transform(X, y,  **transform_params)
-
-    def _more_tags(self):
-        tags = super()._more_tags()
-        tags.update({'allow_nan': True, ALLOW_VARIABLE_LENGTH: True})
-        return tags
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()

@@ -99,7 +99,7 @@ def ctw_path(
         two. In this case, if `global_constraint` corresponds to no global
         constraint, a `RuntimeWarning` is raised and no global constraint is
         used.
-    verbose : bool (default: True)
+    verbose : bool (default: False)
         If True, scores are printed at each iteration of the algorithm.
     be : Backend object or string or None
         Backend. If `be` is an instance of the class `NumPyBackend` or the string `"numpy"`,
@@ -252,7 +252,7 @@ def ctw(
         two. In this case, if `global_constraint` corresponds to no global
         constraint, a `RuntimeWarning` is raised and no global constraint is
         used.
-    verbose : bool (default: True)
+    verbose : bool (default: False)
         If True, scores are printed at each iteration of the algorithm.
     be : Backend object or string or None
         Backend. If `be` is an instance of the class `NumPyBackend` or the string `"numpy"`,
@@ -363,7 +363,7 @@ def cdist_ctw(
     n_jobs : int or None, optional (default=None)
         The number of jobs to run in parallel.
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
-        ``-1`` means using all processors. See scikit-learns'
+        ``-1`` means using all processors. See scikit-learn's
         `Glossary <https://scikit-learn.org/stable/glossary.html#term-n-jobs>`__
         for more details.
     verbose : int, optional (default=0)

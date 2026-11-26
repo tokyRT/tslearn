@@ -1,5 +1,6 @@
-import copy
-from abc import ABCMeta, abstractmethod
+"""Base classes for `tslearn` estimators."""
+
+from abc import ABCMeta
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 import json
@@ -7,6 +8,8 @@ import pickle
 from warnings import warn
 
 import numpy as np
+
+from sklearn.utils.validation import check_is_fitted
 
 h5py_msg = 'h5py not installed, hdf5 features will not be supported.\n'\
            'Install h5py to use hdf5 features: http://docs.h5py.org/'
@@ -19,24 +22,19 @@ else:
     from tslearn import hdftools
     HDF5_INSTALLED = True
 
-from sklearn.exceptions import NotFittedError
+from sklearn.utils import Tags
 
 
-try:
-    from sklearn.utils import Tags
+@dataclass
+class TsLearnTags(Tags):
+    """Estimator tags"""
 
-    @dataclass
-    class TsLearnTags(Tags):
-        allow_variable_length: bool = False
+    allow_variable_length: bool = False
 
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-            self.input_tags.sparse = False
-            self.input_tags.three_d_array = True
-
-except ImportError:
-    # sklearn < 1.6
-    TsLearnTags = dict
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.input_tags.sparse = False
+        self.input_tags.three_d_array = True
 
 
 ALLOW_VARIABLE_LENGTH = 'allow_variable_length'
@@ -51,6 +49,7 @@ _DEFAULT_TAGS = {
 
 
 class TimeSeriesMixin(object):
+    """Base estimator class"""
 
     @contextmanager
     def _patch_attribute(self, attribute_name, value):
@@ -61,9 +60,6 @@ class TimeSeriesMixin(object):
             yield
         finally:
             setattr(self, attribute_name, orig)
-
-    def _more_tags(self):
-        return copy.deepcopy(_DEFAULT_TAGS)
 
     def __sklearn_tags__(self):
         tags_orig = super().__sklearn_tags__()
@@ -76,22 +72,8 @@ class TimeSeriesMixin(object):
 
 
 class BaseModelPackage(object):
+    """Serialization/deserialization interface."""
     __metaclass__ = ABCMeta
-
-    @abstractmethod
-    def _is_fitted(self):
-        """
-        Implement this method in a subclass to check
-        if the model has been fit.
-
-        Usually implements a model specific call to
-        sklearn.utils.validation.check_is_fitted
-
-        Returns
-        -------
-        bool
-        """
-        pass
 
     def _get_model_params(self):
         """Get model parameters that are sufficient to recapitulate it."""
@@ -118,8 +100,7 @@ class BaseModelPackage(object):
             dict with relevant attributes sufficient to describe the model.
         """
 
-        if not self._is_fitted():
-            raise NotFittedError("Model must be fit before it can be packaged")
+        check_is_fitted(self)
 
         d = {'hyper_params': self.get_params(),
              'model_params': self._get_model_params()}
@@ -157,9 +138,9 @@ class BaseModelPackage(object):
             param = model_params[k]
 
             if isinstance(param, np.ndarray):
-                model_params[k] = param.tolist()  # for json support
+                model_params[k] = param.tolist()
             elif isinstance(param, list) and isinstance(param[0], np.ndarray):
-                model_params[k] = [p.tolist() for p in param]  # json support
+                model_params[k] = [p.tolist() for p in param]
             else:
                 model_params[k] = param
         return model_params
@@ -188,7 +169,7 @@ class BaseModelPackage(object):
         """
 
         model_params = model.pop('model_params')
-        hyper_params = model.pop('hyper_params')  # hyper-params
+        hyper_params = model.pop('hyper_params')
 
         # instantiate with hyper-parameters
         inst = cls(**hyper_params)
@@ -200,12 +181,14 @@ class BaseModelPackage(object):
         return inst
 
     @classmethod
-    def _byte2string(cls, model):
-        for param_set in ['hyper_params', 'model_params']:
-            for k in model[param_set].keys():
-                if type(model[param_set][k]) == type(b''):
-                    model[param_set][k] = model[param_set][k].decode('utf-8')
-        return model
+    def _byte2string(cls, d):
+        for k, v in d.items():
+            if type(d[k]) == type(b''):
+                d[k] = d[k].decode('utf-8')
+            elif type(d[k]) == dict:
+                d[k] = cls._byte2string(d[k])
+        return d
+
 
     def to_hdf5(self, path):
         """

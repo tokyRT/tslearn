@@ -7,6 +7,9 @@ import pytest
 
 from scipy.spatial.distance import cdist
 
+from sklearn.exceptions import ConvergenceWarning, NotFittedError
+from sklearn.utils.validation import check_is_fitted
+
 from tslearn.clustering import (
     EmptyClusterError,
     TimeSeriesKMeans,
@@ -63,11 +66,13 @@ def test_kernel_kmeans():
                           random_state=rng).fit(time_series)
     np.testing.assert_allclose(gak_km.labels_, gak_km.predict(time_series))
 
-    gak_km = KernelKMeans(n_clusters=101,
-                          verbose=False,
-                          max_iter=5,
-                          random_state=rng).fit(time_series)
+    with pytest.warns(ConvergenceWarning, match="empty cluster"):
+        gak_km = KernelKMeans(n_clusters=101,
+                              verbose=False,
+                              max_iter=5,
+                              random_state=rng).fit(time_series)
     assert gak_km._X_fit is None
+    assert gak_km.labels_ is None
 
     with pytest.raises(RuntimeError):
         KernelKMeans(n_clusters=101,
@@ -83,6 +88,62 @@ def test_kernel_kmeans():
                           max_iter=5,
                           random_state=rng).fit(time_series)
     assert gak_km.sigma_gak_ is None
+
+
+def test_kernel_kmeans_refit_recomputes_auto_sigma():
+    X = np.array([[0., 0.5], [1., 1.5], [4., 4.5], [6., 6.5]])[..., None]
+    kernel_params = {"sigma": "auto"}
+    model = KernelKMeans(n_clusters=2,
+                         kernel_params=kernel_params,
+                         random_state=0)
+    model.fit(X)
+    original_sigma = model.sigma_gak_
+    assert kernel_params == model.kernel_params
+
+    model.fit(16 * X)
+    fitted_sigma = model.sigma_gak_
+    assert fitted_sigma == pytest.approx(16 * original_sigma)
+
+    with pytest.raises(ValueError):
+        model.fit(np.full_like(X, np.nan))
+    with pytest.raises(NotFittedError):
+        model.predict(X)
+    assert kernel_params == model.kernel_params
+
+
+def test_kernel_kmeans_all_inits_empty_cluster():
+    # 15 time series with only 3 distinct values cannot be split into 4
+    # non-empty clusters, so every initialization raises EmptyClusterError.
+    # The model must then be left in an unfitted state instead of exposing
+    # the labels of a failed attempt.
+    X = np.repeat([0., 1., 5.], 5)[:, None, None]
+
+    model = KernelKMeans(n_clusters=4, kernel="rbf", random_state=0)
+    with pytest.warns(ConvergenceWarning, match="empty cluster"):
+        model.fit(X)
+
+    assert model._X_fit is None
+    assert model.labels_ is None
+    assert model.inertia_ == np.inf
+    assert model.n_iter_ == 0
+    assert not hasattr(model, "n_features_in_")
+
+    with pytest.raises(NotFittedError):
+        model.predict(X)
+
+    model = KernelKMeans(n_clusters=4, kernel="rbf", random_state=0)
+    with pytest.warns(ConvergenceWarning, match="empty cluster"):
+        labels = model.fit_predict(X)
+    assert labels is None
+
+    # A regular fit on the same model instance recovers a fitted state
+    model.set_params(n_clusters=3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConvergenceWarning)
+        model.fit(X)
+    assert model.labels_ is not None
+    assert model.n_features_in_ == 1
+    np.testing.assert_array_equal(model.predict(X), model.labels_)
 
 
 def test_kmeans():
@@ -143,10 +204,14 @@ def test_kmeans():
     np.testing.assert_allclose(km_sdtw.labels_, dists.argmin(axis=1))
     np.testing.assert_allclose(km_sdtw.labels_, km_sdtw.predict(time_series))
 
-    km_nofit = TimeSeriesKMeans(n_clusters=101,
-                                verbose=False,
-                                random_state=rng).fit(time_series)
-    assert(km_nofit._X_fit is None)
+    with pytest.warns(ConvergenceWarning, match="empty cluster"):
+        km_nofit = TimeSeriesKMeans(n_clusters=101,
+                                    verbose=False,
+                                    random_state=rng).fit(time_series)
+    assert km_nofit.labels_ is None
+    assert km_nofit.cluster_centers_ is None
+    with pytest.raises(ValueError):
+        check_is_fitted(km_nofit)
 
     with pytest.raises(ValueError):
         KShape(n_clusters=101, verbose=False, init="random").fit(time_series)
@@ -197,6 +262,13 @@ def test_kmeans():
                                     [1., 2., 2., 3., 4.],
                                     [3., 2., 1.]])
     sizes_all_same_bary = [barys.shape[1]] * n_clusters
+    # Three groups of series, each one close to one of the initial
+    # barycenters, so that no cluster ends up empty
+    time_series = np.concatenate([
+        np.linspace(1., 3., sz) + .1 * rng.randn(5, sz),
+        np.linspace(1., 4., sz) + .1 * rng.randn(5, sz),
+        np.linspace(3., 1., sz) + .1 * rng.randn(5, sz)
+    ])[:, :, None]
     # If Euclidean is used, barycenters size should be that of the input series
     km_euc = TimeSeriesKMeans(n_clusters=3,
                               metric="euclidean",
@@ -237,6 +309,33 @@ def test_kmeans():
     np.testing.assert_equal(set(preds), set(range(4)))
 
 
+@pytest.mark.parametrize("metric", ["euclidean", "dtw", "softdtw"])
+def test_kmeans_inertia_matches_centers_at_iteration_limit(metric):
+    X = np.array([0., 2., 8., 10.]).reshape(-1, 1, 1)
+    model = TimeSeriesKMeans(n_clusters=1, max_iter=1, metric=metric,
+                            init=X[:1]).fit(X)
+
+    np.testing.assert_allclose(model.cluster_centers_, [[[5.]]])
+    distances = model.transform(X)
+    assert model.inertia_ == pytest.approx(np.mean(distances[:, 0] ** 2))
+
+
+def test_kmeans_selects_restart_using_final_centers():
+    X = np.array([1., 13., 15., 20., 22., 27., 30., 42.]).reshape(-1, 1, 1)
+    params = dict(n_clusters=3, max_iter=1, init="random")
+    rng = np.random.RandomState(0)
+    candidates = [TimeSeriesKMeans(random_state=rng, **params).fit(X)
+                  for _ in range(2)]
+    candidate_scores = [np.mean(model.transform(X).min(axis=1) ** 2)
+                        for model in candidates]
+
+    selected = TimeSeriesKMeans(n_init=2, random_state=0, **params).fit(X)
+    selected_score = np.mean(selected.transform(X).min(axis=1) ** 2)
+
+    assert selected_score == pytest.approx(min(candidate_scores))
+    assert selected.inertia_ == pytest.approx(selected_score)
+
+
 def test_kshape():
     n, sz, d = 15, 10, 3
     rng = np.random.RandomState(0)
@@ -271,6 +370,48 @@ def test_kshape():
     assert all(kshape.labels_[0] == kshape.labels_[:10])
     assert all(kshape.labels_[10] == kshape.labels_[10:])
     assert kshape.labels_[0] != kshape.labels_[10]
+
+
+@pytest.mark.parametrize("estimator_class", [KShape, TimeSeriesKMeans])
+def test_all_inits_empty_cluster(estimator_class):
+    # 12 identical series cannot be split into 2 non-empty clusters, so every
+    # initialization raises EmptyClusterError. The model must then be left in
+    # an unfitted state instead of exposing attributes from a failed attempt.
+    n, sz = 12, 20
+    X = np.tile(np.sin(np.linspace(0, 2 * np.pi, sz)), (n, 1))[:, :, None]
+    X = TimeSeriesScalerMeanVariance().fit_transform(X)
+
+    model = estimator_class(n_clusters=2, n_init=8, random_state=0)
+    with pytest.warns(ConvergenceWarning, match="empty cluster"):
+        model.fit(X)
+
+    assert model.labels_ is None
+    assert model.cluster_centers_ is None
+    assert model.inertia_ == np.inf
+    assert model.n_iter_ == 0
+    assert not hasattr(model, "n_features_in_")
+
+    with pytest.raises(NotFittedError):
+        model.predict(X)
+    if hasattr(model, "transform"):
+        with pytest.raises(NotFittedError):
+            model.transform(X)
+
+    model = estimator_class(n_clusters=2, n_init=8, random_state=0)
+    with pytest.warns(ConvergenceWarning, match="empty cluster"):
+        labels = model.fit_predict(X)
+    assert labels is None
+
+    # A regular fit on the same model instance recovers a fitted state
+    rng = np.random.RandomState(0)
+    X_ok = TimeSeriesScalerMeanVariance().fit_transform(rng.randn(n, sz, 1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConvergenceWarning)
+        model.fit(X_ok)
+    assert model.labels_ is not None
+    assert model.cluster_centers_ is not None
+    assert model.n_features_in_ == 1
+    np.testing.assert_array_equal(model.predict(X_ok), model.labels_)
 
 
 def test_silhouette():

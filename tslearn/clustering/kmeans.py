@@ -1,10 +1,13 @@
 """K-means related clustering for time series."""
+import warnings
+
 import numpy
 
 from scipy.spatial.distance import cdist
 
 from sklearn.base import ClusterMixin, TransformerMixin, BaseEstimator
 from sklearn.cluster._kmeans import _kmeans_plusplus
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics.pairwise import pairwise_kernels
 from sklearn.utils import check_random_state
 from sklearn.utils.validation import _check_sample_weight
@@ -15,7 +18,6 @@ from tslearn.barycenters import (
     softdtw_barycenter,
 )
 from tslearn.bases import BaseModelPackage, TimeSeriesMixin
-from tslearn.bases.bases import ALLOW_VARIABLE_LENGTH
 from tslearn.metrics import (
     _cdist_dtw,
     _cdist_gak,
@@ -171,7 +173,7 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
         The number of jobs to run in parallel for GAK cross-similarity matrix
         computations.
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
-        ``-1`` means using all processors. See scikit-learns'
+        ``-1`` means using all processors. See scikit-learn's
         `Glossary <https://scikit-learn.org/stable/glossary.html#term-n_jobs>`_
         for more details.
 
@@ -197,6 +199,11 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
 
     n_iter_ : int
         The number of iterations performed during fit.
+
+    sigma_gak_: float or None
+        For Global Alignment Kernel, the sigma used for computation. Either computed based on a sampling
+        of the training set when kernel_params sigma is auto, or provided or default value (1.).
+        None otherwise.
 
     Notes
     -----
@@ -245,9 +252,11 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
         self.verbose = verbose
         self.random_state = random_state
 
-    def _is_fitted(self):
-        check_is_fitted(self, "_X_fit")
-        return True
+    def __sklearn_is_fitted__(self):
+        # ``_X_fit`` is None when every initialization failed (see ``fit``),
+        # in which case the model must not be considered fitted even though
+        # the attribute exists.
+        return getattr(self, "_X_fit", None) is not None
 
     def _get_model_params(self):
         params = super()._get_model_params()
@@ -258,10 +267,9 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
         if self.kernel_params is None:
             kernel_params = {}
         else:
-            kernel_params = self.kernel_params
-        if self.kernel == "gak":
-            if hasattr(self, "sigma_gak_"):
-                kernel_params["sigma"] = self.sigma_gak_
+            kernel_params = self.kernel_params.copy()
+        if self.kernel == "gak" and hasattr(self, "sigma_gak_"):
+            kernel_params["sigma"] = self.sigma_gak_
         return kernel_params
 
     def _get_kernel(self, X, Y=None):
@@ -341,13 +349,6 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
         rs = check_random_state(self.random_state)
 
         max_attempts = max(self.n_init, 10)
-        kernel_params = self._get_kernel_params()
-        if self.kernel == "gak":
-            self.sigma_gak_ = kernel_params.get("sigma", 1.0)
-            if self.sigma_gak_ == "auto":
-                self.sigma_gak_ = sigma_gak(X, random_state=rs)
-        else:
-            self.sigma_gak_ = None
 
         self.labels_ = None
         self.inertia_ = None
@@ -356,6 +357,18 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
         # n_iter_ will contain the number of iterations the most
         # successful run required.
         self.n_iter_ = 0
+
+        # Reset sigma_gak_ to ensure proper recompute
+        if hasattr(self, 'sigma_gak_'):
+            del self.sigma_gak_
+
+        kernel_params = self._get_kernel_params()
+        if self.kernel == "gak":
+            self.sigma_gak_ = kernel_params.get("sigma", 1.0)
+            if self.sigma_gak_ == "auto":
+                self.sigma_gak_ = sigma_gak(X, random_state=rs)
+        else:
+            self.sigma_gak_ = None
 
         n_samples = X.shape[0]
         K = self._get_kernel(X)
@@ -385,6 +398,21 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
             self.inertia_ = min_inertia
             self._X_fit = X
             self.n_features_in_ = X.shape[-1]
+        else:
+            # Every initialization raised EmptyClusterError: discard the
+            # attributes left over from the last failed attempt so that the
+            # model does not look fitted.
+            self.labels_ = None
+            self.inertia_ = numpy.inf
+            warnings.warn(
+                "All initializations of %s led to at least one empty "
+                "cluster, so no valid clustering could be found. The model "
+                "is left unfitted (labels_ is None, and predict will raise "
+                "NotFittedError). Consider decreasing n_clusters or "
+                "increasing n_init."
+                % type(self).__name__,
+                ConvergenceWarning
+            )
         return self
 
     def _compute_dist(self, K, dist):
@@ -446,25 +474,13 @@ class KernelKMeans(TimeSeriesMixin, ClusterMixin, BaseEstimator, BaseModelPackag
             Index of the cluster each sample belongs to.
         """
         X = check_array(X, allow_nd=True, force_all_finite=False)
-        check_is_fitted(self, "_X_fit")
+        check_is_fitted(self)
         X = check_dims(X, X_fit_dims=self._X_fit.shape, check_n_features_only=True)
         K = self._get_kernel(X, self._X_fit)
         n_samples = X.shape[0]
         dist = numpy.zeros((n_samples, self.n_clusters))
         self._compute_dist(K, dist)
         return dist.argmin(axis=1)
-
-    def _more_tags(self):
-        tags = super()._more_tags()
-        sample_weight_failure_msg = "Not supported due to clusters initialization"
-        tags.update({
-            "allow_nan": True,
-            ALLOW_VARIABLE_LENGTH: True,
-        })
-        tags["_xfail_checks"].update({
-            "check_sample_weight_equivalence_on_dense_data": sample_weight_failure_msg,
-        })
-        return tags
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -522,7 +538,7 @@ class TimeSeriesKMeans(
         Ignored if the cross-distance matrix cannot be computed using
         parallelization.
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
-        ``-1`` means using all processors. See scikit-learns'
+        ``-1`` means using all processors. See scikit-learn's
         `Glossary <https://scikit-learn.org/stable/glossary.html#term-n_jobs>`_
         for more details.
 
@@ -626,10 +642,6 @@ class TimeSeriesKMeans(
         self.random_state = random_state
         self.init = init
 
-    def _is_fitted(self):
-        check_is_fitted(self, ["cluster_centers_"])
-        return True
-
     def _get_metric_params(self):
         if self.metric_params is None:
             metric_params = {}
@@ -691,21 +703,24 @@ class TimeSeriesKMeans(
         else:
             raise ValueError("Value %r for parameter 'init'" "is invalid" % self.init)
         self.cluster_centers_ = _check_full_length(self.cluster_centers_)
-        old_inertia = numpy.inf
+        self._assign(X)
+        if self.verbose:
+            print("%.3f" % self.inertia_, end=" --> ")
 
+        self._iter = 0
         for it in range(self.max_iter):
+            old_inertia = self.inertia_
+            self._update_centroids(X)
             self._assign(X)
+            self._iter += 1
             if self.verbose:
                 print("%.3f" % self.inertia_, end=" --> ")
-            self._update_centroids(X)
 
             if numpy.abs(old_inertia - self.inertia_) < self.tol:
                 break
-            old_inertia = self.inertia_
+
         if self.verbose:
             print("")
-
-        self._iter = it + 1
 
         return self
 
@@ -811,7 +826,6 @@ class TimeSeriesKMeans(
         self.labels_ = None
         self.inertia_ = numpy.inf
         self.cluster_centers_ = None
-        self._X_fit = None
         self._squared_inertia = True
 
         self.n_iter_ = 0
@@ -896,7 +910,7 @@ class TimeSeriesKMeans(
             allow_nd=True,
             force_all_finite="allow-nan" if self.metric != "euclidean" else True
         )
-        check_is_fitted(self, "cluster_centers_")
+        check_is_fitted(self)
         X = check_dims(
             X,
             X_fit_dims=self.cluster_centers_.shape,
@@ -926,7 +940,7 @@ class TimeSeriesKMeans(
             allow_nd=True,
             force_all_finite="allow-nan" if self.metric != "euclidean" else True
         )
-        check_is_fitted(self, "cluster_centers_")
+        check_is_fitted(self)
         X = check_dims(
             X,
             X_fit_dims=self.cluster_centers_.shape,
@@ -934,14 +948,6 @@ class TimeSeriesKMeans(
             check_n_features_only=(self.metric != "euclidean"),
         )
         return self._transform(X)
-
-    def _more_tags(self):
-        tags = super()._more_tags()
-        tags.update({
-            "allow_nan": self.metric != "euclidean",
-            ALLOW_VARIABLE_LENGTH: self.metric != "euclidean"}
-        )
-        return tags
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()

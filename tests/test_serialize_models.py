@@ -1,4 +1,4 @@
-from glob import glob
+import tempfile
 import os
 
 import numpy
@@ -7,10 +7,14 @@ import pytest
 
 from sklearn.exceptions import NotFittedError
 
+import tslearn
 from tslearn import hdftools
 from tslearn.preprocessing import TimeSeriesScalerMeanVariance
-from tslearn.neighbors import KNeighborsTimeSeries, \
-    KNeighborsTimeSeriesClassifier
+from tslearn.neighbors import (
+    KNeighborsTimeSeries,
+    KNeighborsTimeSeriesClassifier,
+    KNeighborsTimeSeriesRegressor
+)
 from tslearn.clustering import KShape, TimeSeriesKMeans, \
     KernelKMeans
 from tslearn.generators import random_walks
@@ -18,28 +22,10 @@ from tslearn.piecewise import PiecewiseAggregateApproximation, \
     SymbolicAggregateApproximation, OneD_SymbolicAggregateApproximation
 
 
-tmp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp')
 all_formats = ['json', 'hdf5', 'pickle']
 
 
-try:
-    os.makedirs(tmp_dir)
-except (FileExistsError, OSError):
-    pass
-
-
-def teardown_module():
-    clear_tmp()
-    os.removedirs(tmp_dir)
-
-
-def clear_tmp():
-    files = glob(os.path.join(tmp_dir, '*'))
-    for f in files:
-        os.remove(f)
-
-
-def test_hdftools():
+def test_hdftools(tmp_path):
     dtypes = [int, numpy.int8, numpy.int16, numpy.int32, numpy.int64,
               float, numpy.float32, numpy.float64]
 
@@ -49,7 +35,7 @@ def test_hdftools():
         name = numpy.dtype(dtype).name
         d[name] = (numpy.random.rand(100, 100) * 10).astype(dtype)
 
-    fname = os.path.join(tmp_dir, 'hdf_test.hdf5')
+    fname = os.path.join(tmp_path, 'hdf_test.hdf5')
 
     hdftools.save_dict(d, filename=fname, group='data')
 
@@ -61,24 +47,30 @@ def test_hdftools():
 
 def _check_not_fitted(model):
     # not serializable if not fitted
-    for fmt in all_formats:
-        with pytest.raises(NotFittedError):
-            getattr(model, "to_{}".format(fmt))(
-                os.path.join(
-                    tmp_dir, "{}.{}".format(model.__class__.__name__, fmt)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        for fmt in all_formats:
+            with pytest.raises(NotFittedError):
+                getattr(model, "to_{}".format(fmt))(
+                    os.path.join(
+                        tmp_dir,
+                        "{}.{}".format(model.__class__.__name__, fmt)
+                    )
                 )
-            )
 
 
 def _check_params_predict(model, X, test_methods, check_params_fun=None,
-                          formats=None, exclude_hyper_params=None):
+                          formats=None, exclude_hyper_params=None, ):
     if formats is None:
         formats = all_formats
+
+    tmp_dir = tempfile.TemporaryDirectory()
+
     # serialize to all all_formats
     for fmt in formats:
         getattr(model, "to_{}".format(fmt))(
             os.path.join(
-                tmp_dir, "{}.{}".format(model.__class__.__name__, fmt)
+                tmp_dir.name,
+                "{}.{}".format(model.__class__.__name__, fmt)
             )
         )
 
@@ -87,7 +79,8 @@ def _check_params_predict(model, X, test_methods, check_params_fun=None,
     for fmt in formats:
         sm = getattr(model, "from_{}".format(fmt))(
             os.path.join(
-                tmp_dir, "{}.{}".format(model.__class__.__name__, fmt)
+                tmp_dir.name,
+                "{}.{}".format(model.__class__.__name__, fmt)
             )
         )
 
@@ -117,16 +110,32 @@ def _check_params_predict(model, X, test_methods, check_params_fun=None,
                 continue
             numpy.testing.assert_equal(getattr(model, p), getattr(sm, p))
 
-    clear_tmp()
+    tmp_dir.cleanup()
 
 
-def test_serialize_global_alignment_kernel_kmeans():
+def _get_random_walk():
+    numpy.random.seed(0)
+    # Generate a random walk time series
+    n_ts, sz, d = 1, 100, 1
+    dataset = random_walks(n_ts=n_ts, sz=sz, d=d)
+    scaler = TimeSeriesScalerMeanVariance(mu=0., std=1.)
+    return scaler.fit_transform(dataset)
+
+
+@pytest.mark.parametrize(
+    "kernel_params",
+    [None, {"sigma": "auto"}, {"sigma": 2.0}]
+)
+def test_serialize_global_alignment_kernel_kmeans(kernel_params):
     n, sz, d = 15, 10, 3
     rng = numpy.random.RandomState(0)
     X = rng.randn(n, sz, d)
 
-    gak_km = KernelKMeans(n_clusters=3, verbose=False,
-                          max_iter=5)
+    gak_km = KernelKMeans(
+        n_clusters=3,
+        verbose=False,
+        kernel_params=kernel_params,
+        max_iter=5)
 
     _check_not_fitted(gak_km)
 
@@ -144,6 +153,8 @@ def test_serialize_timeserieskmeans():
                               n_init=2,
                               metric="dtw",
                               verbose=True,
+                              metric_params={"global_constraint": "sakoe_chiba",
+                                             "sakoe_chiba_radius": 3},
                               max_iter_barycenter=10)
 
     _check_not_fitted(dba_km)
@@ -178,7 +189,7 @@ def test_serialize_kshape():
 
     _check_params_predict(ks, X, ['predict'])
 
-    seed_ixs = [numpy.random.randint(0, X.shape[0] - 1) for i in range(3)]
+    seed_ixs = [rng.randint(0, X.shape[0] - 1) for i in range(3)]
     seeds = numpy.array([X[i] for i in seed_ixs])
 
     ks_seeded = KShape(n_clusters=3, verbose=True, init=seeds)
@@ -190,7 +201,18 @@ def test_serialize_kshape():
     _check_params_predict(ks_seeded, X, ['predict'])
 
 
-def test_serialize_knn():
+@pytest.mark.parametrize("params",
+    [{"metric": "euclidean"},
+     {"metric": "dtw",
+      "metric_params": {"global_constraint": "sakoe_chiba",
+                        "sakoe_chiba_radius": 2}},
+     {"metric": "softdtw",
+      "metric_params": {"gamma_sdtw": 0.2}},
+     {"metric": "sax",
+      "metric_params": {"n_segments": 5,
+                        "alphabet_size_avg" :3,
+                        "scale": True}}])
+def test_serialize_knn(params):
     n, sz, d = 15, 10, 3
     rng = numpy.random.RandomState(0)
     X = rng.randn(n, sz, d)
@@ -198,7 +220,7 @@ def test_serialize_knn():
 
     n_neighbors = 3
 
-    knn = KNeighborsTimeSeries(n_neighbors=n_neighbors)
+    knn = KNeighborsTimeSeries(n_neighbors=n_neighbors, **params)
 
     _check_not_fitted(knn)
 
@@ -207,13 +229,24 @@ def test_serialize_knn():
     _check_params_predict(knn, X, ['kneighbors'])
 
 
-def test_serialize_knn_classifier():
+@pytest.mark.parametrize("params",
+    [{"metric": "euclidean"},
+     {"metric": "dtw",
+      "metric_params": {"global_constraint": "sakoe_chiba",
+                        "sakoe_chiba_radius": 2}},
+     {"metric": "softdtw",
+      "metric_params": {"gamma": 0.2}},
+     {"metric": "sax",
+      "metric_params": {"n_segments": 5,
+                        "alphabet_size_avg" :3,
+                        "scale": True}}])
+def test_serialize_knn_classifier(params):
     n, sz, d = 15, 10, 3
     rng = numpy.random.RandomState(0)
     X = rng.randn(n, sz, d)
     y = rng.randint(low=0, high=3, size=n)
 
-    knc = KNeighborsTimeSeriesClassifier()
+    knc = KNeighborsTimeSeriesClassifier(**params)
 
     _check_not_fitted(knc)
 
@@ -222,13 +255,30 @@ def test_serialize_knn_classifier():
     _check_params_predict(knc, X, ['predict'])
 
 
-def _get_random_walk():
-    numpy.random.seed(0)
-    # Generate a random walk time series
-    n_ts, sz, d = 1, 100, 1
-    dataset = random_walks(n_ts=n_ts, sz=sz, d=d)
-    scaler = TimeSeriesScalerMeanVariance(mu=0., std=1.)
-    return scaler.fit_transform(dataset)
+@pytest.mark.parametrize("params",
+    [{"metric": "euclidean"},
+     {"metric": "dtw",
+      "metric_params": {"global_constraint": "sakoe_chiba",
+                        "sakoe_chiba_radius": 2}},
+     {"metric": "softdtw",
+      "metric_params": {"gamma": 0.2}},
+     {"metric": "sax",
+      "metric_params": {"n_segments": 5,
+                        "alphabet_size_avg" :3,
+                        "scale": True}}])
+def test_serialize_knn_regressor(params):
+    n, sz, d = 15, 10, 3
+    rng = numpy.random.RandomState(0)
+    X = rng.randn(n, sz, d)
+    y = rng.randint(low=0, high=3, size=n)
+
+    knr = KNeighborsTimeSeriesRegressor(**params)
+
+    _check_not_fitted(knr)
+
+    knr.fit(X, y)
+
+    _check_params_predict(knr, X, ['predict'])
 
 
 def test_serialize_paa():
@@ -324,3 +374,32 @@ def test_serialize_shapelets():
             _check_params_predict(shp, X, ['predict'],
                                   check_params_fun=get_model_weights,
                                   formats=["hdf5"])
+
+
+@pytest.mark.parametrize(
+    "model_class",
+    [tslearn.preprocessing.TimeSeriesImputer,
+     tslearn.preprocessing.TimeSeriesScalerMeanVariance,
+     tslearn.preprocessing.TimeSeriesScalerMinMax,
+     tslearn.preprocessing.TimeSeriesResampler,
+     tslearn.preprocessing.TimeSeriesFeatureSynchronizer]
+)
+def test_serialize_preprocessing(model_class):
+    model = model_class()
+    _check_not_fitted(model)
+
+    X = _get_random_walk()
+    model.fit(X)
+
+    _check_params_predict(model, X, ['transform'])
+
+
+def test_serialize_matrix_profile():
+    n, sz, d = 15, 10, 1
+    rng = numpy.random.RandomState(0)
+    X = rng.randn(n, sz, d)
+
+    estimator = tslearn.matrix_profile.MatrixProfile()
+    _check_not_fitted(estimator)
+    estimator.fit(X)
+    _check_params_predict(estimator, X, ["transform"])
