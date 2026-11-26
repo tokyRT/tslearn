@@ -28,6 +28,13 @@ MooseCIConfig {
 		#json, #html
 	],
 	#outputPath : '.moose-ci/report',
-	#visualizations : [ ],
+	#visualizations : [
+		{
+			#view : #architecturalMap,
+			#of : #packages,
+			#in : 'metrics|clustering|barycenters|datasets|backend|utils|preprocessing|foundation|forecasting|svm|shapelets|piecewise|neural_network|neighbors|matrix_profile|hdftools|generators|early_classification|bases',
+			#settings : { #weightedLinks : true }
+		}
+],
 	#isRemote : false
 }
